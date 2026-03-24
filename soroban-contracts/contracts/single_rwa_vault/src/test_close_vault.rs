@@ -2,12 +2,12 @@ extern crate std;
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    Address, Env,
+    Address,
 };
 
 use crate::{
     test_helpers::{setup, mint_usdc},
-    VaultState, Error,
+    VaultState,
 };
 
 #[test]
@@ -84,9 +84,8 @@ fn test_close_vault_fails_for_non_operator() {
 fn test_closed_state_blocks_yield_claim() {
     let ctx = setup();
     let v = ctx.vault();
-    let e = &ctx.env;
 
-    e.ledger().set_timestamp(ctx.params.maturity_date + 1);
+    ctx.env.ledger().set_timestamp(ctx.params.maturity_date + 1);
     v.mature_vault(&ctx.operator);
     v.close_vault(&ctx.operator);
     assert_eq!(v.vault_state(), VaultState::Closed);
@@ -99,8 +98,8 @@ fn test_closed_state_blocks_yield_claim() {
 fn test_closed_state_blocks_early_redemption_request() {
     let ctx = setup();
     let v = ctx.vault();
-    let e = &ctx.env;
 
+    ctx.env.ledger().set_timestamp(ctx.params.maturity_date + 1);
     v.mature_vault(&ctx.operator); // Need to mature first to close
     v.close_vault(&ctx.operator);
 

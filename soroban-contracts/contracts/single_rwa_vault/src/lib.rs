@@ -829,6 +829,9 @@ impl SingleRWAVault {
         // --- Interaction ---
         transfer_asset_from_vault(e, &receiver, total_out);
 
+        // Emit ERC-4626 compliant Withdraw event
+        emit_withdraw(e, caller.clone(), receiver.clone(), owner.clone(), assets, shares);
+        // Emit custom maturity redemption event with yield info
         emit_redeem_at_maturity(e, owner, receiver, shares, assets, pending);
         bump_instance(e);
         release_lock(e);
