@@ -382,15 +382,25 @@ impl SingleRWAVault {
     // ERC-4626 preview helpers
     // ─────────────────────────────────────────────────────────────────
 
+    /// ERC-4626 `previewDeposit`: shares received for `assets` deposited (rounding **down**).
+    /// Favors the vault — user receives fewer shares than the ideal rational amount.
+    /// Reverts when `assets > 0` but the rounded share amount is 0 (dust donation guard).
     pub fn preview_deposit(e: &Env, assets: i128) -> i128 {
         preview_deposit(e, assets)
     }
+    /// ERC-4626 `previewMint`: assets paid to mint exactly `shares` (rounding **up**).
+    /// Favors the vault — user pays at least the ideal asset amount.
     pub fn preview_mint(e: &Env, shares: i128) -> i128 {
         preview_mint(e, shares)
     }
+    /// ERC-4626 `previewWithdraw`: shares burned to withdraw exactly `assets` (rounding **up**).
+    /// Favors the vault — user burns at least the ideal share amount.
     pub fn preview_withdraw(e: &Env, assets: i128) -> i128 {
         preview_withdraw(e, assets)
     }
+    /// ERC-4626 `previewRedeem`: assets received when redeeming `shares` (rounding **down**).
+    /// Favors the vault — user receives fewer assets than the ideal rational amount.
+    /// Reverts when `shares > 0` but the rounded asset amount is 0 (dust redemption guard).
     pub fn preview_redeem(e: &Env, shares: i128) -> i128 {
         preview_redeem(e, shares)
     }
@@ -433,7 +443,9 @@ impl SingleRWAVault {
         if max_assets == i128::MAX {
             return i128::MAX;
         }
-        preview_deposit(e, max_assets)
+        // Floor conversion — may be 0 when `max_deposit` is below one full share in
+        // asset terms; must not panic (unlike `preview_deposit` for user-supplied amounts).
+        convert_to_shares_floor(e, max_assets)
     }
 
     /// Maximum assets `owner` can withdraw right now.
@@ -447,7 +459,8 @@ impl SingleRWAVault {
             return 0;
         }
         let shares = get_share_balance(e, &owner);
-        preview_redeem(e, shares)
+        // Floor conversion for a view helper — may be 0 for dust balances; must not panic.
+        convert_to_assets_floor(e, shares)
     }
 
     /// Maximum shares `owner` can redeem right now (their full share balance).
@@ -924,24 +937,23 @@ impl SingleRWAVault {
             panic_with_error!(e, Error::AlreadyProcessed);
         }
 
-        // --- Effects ---
-        req.processed = true;
-        put_redemption_request(e, request_id, req.clone());
-
-        // Burn from escrow
         let escrowed = get_escrowed_shares(e, &req.user);
         if escrowed < req.shares {
-            // This should ideally not happen if logic is correct
             panic_with_error!(e, Error::InsufficientBalance);
         }
-        put_escrowed_shares(e, &req.user, escrowed - req.shares);
-        put_total_supply(e, get_total_supply(e) - req.shares);
-        // Note: update_user_snapshot was already called at request time
 
+        // Payout math before irreversible updates — `preview_redeem` may panic on dust
+        // (ERC-4626 zero-asset guard) and must not run after escrow/supply are changed.
         let assets = preview_redeem(e, req.shares);
         let fee_bps = get_early_redemption_fee_bps(e) as i128;
         let fee = math::mul_div(e, assets, fee_bps, 10000);
         let net_assets = assets - fee;
+
+        // --- Effects ---
+        req.processed = true;
+        put_redemption_request(e, request_id, req.clone());
+        put_escrowed_shares(e, &req.user, escrowed - req.shares);
+        put_total_supply(e, get_total_supply(e) - req.shares);
         put_total_deposited(e, get_total_deposited(e) - net_assets);
 
         // --- Interaction ---
@@ -1317,14 +1329,26 @@ fn total_assets(e: &Env) -> i128 {
     get_total_deposited(e)
 }
 
-fn preview_deposit(e: &Env, assets: i128) -> i128 {
+/// `convertToShares` with **floor** division: `floor(assets * totalSupply / totalAssets)`.
+/// ERC-4626 deposit path rounds down (vault-favorable). Used by `max_mint` where a 0
+/// result is valid; `preview_deposit` adds a dust guard on top.
+fn convert_to_shares_floor(e: &Env, assets: i128) -> i128 {
     let supply = get_total_supply(e);
     let ta = total_assets(e);
     if supply == 0 || ta == 0 {
         return assets;
     }
-    // shares = assets * totalSupply / totalAssets
     math::mul_div(e, assets, supply, ta)
+}
+
+fn preview_deposit(e: &Env, assets: i128) -> i128 {
+    // ERC-4626: round **down** on deposit so the user receives fewer shares than the
+    // exact rational amount — protects existing LPs from dilution via rounding.
+    let shares = convert_to_shares_floor(e, assets);
+    if assets > 0 && shares == 0 {
+        panic_with_error!(e, Error::PreviewZeroShares);
+    }
+    shares
 }
 
 fn preview_mint(e: &Env, shares: i128) -> i128 {
@@ -1333,7 +1357,8 @@ fn preview_mint(e: &Env, shares: i128) -> i128 {
     if supply == 0 || ta == 0 {
         return shares;
     }
-    // assets = shares * totalAssets / totalSupply  (ceil)
+    // ERC-4626: round **up** on mint so the user pays at least the fair asset amount
+    // for the requested shares — vault-favorable, symmetric to deposit rounding down.
     math::mul_div_ceil(e, shares, ta, supply)
 }
 
@@ -1343,24 +1368,31 @@ fn preview_withdraw(e: &Env, assets: i128) -> i128 {
     if supply == 0 || ta == 0 {
         return assets;
     }
-    // shares = assets * totalSupply / totalAssets  (ceil)
+    // ERC-4626: round **up** on withdraw so the user burns at least the shares needed
+    // to cover `assets` — vault-favorable (user cannot withdraw “too cheaply”).
     math::mul_div_ceil(e, assets, supply, ta)
 }
 
-fn preview_redeem(e: &Env, shares: i128) -> i128 {
+/// `convertToAssets` with **floor** division: `floor(shares * totalAssets / totalSupply)`.
+/// ERC-4626 redeem path rounds down (vault-favorable). Used by `max_withdraw` where 0 is
+/// valid; `preview_redeem` adds a dust guard on top.
+fn convert_to_assets_floor(e: &Env, shares: i128) -> i128 {
     let supply = get_total_supply(e);
     let ta = total_assets(e);
     if supply == 0 {
         return shares;
     }
-    // assets = shares * totalAssets / (totalSupply + totalEscrowedShares)
-    // Actually total_supply already includes escrowed shares if we don't subtract them.
-    // Let's check how _mint/_burn affect it.
-    // _mint adds to total_supply.
-    // _burn subtracts from total_supply.
-    // My request_early_redemption does NOT _burn, so total_supply is unchanged.
-    // So total_supply ALREADY includes escrowed shares.
     math::mul_div(e, shares, ta, supply)
+}
+
+fn preview_redeem(e: &Env, shares: i128) -> i128 {
+    // ERC-4626: round **down** on redeem so the user receives fewer assets than the
+    // exact rational amount — protects the vault from paying out extra on rounding.
+    let assets = convert_to_assets_floor(e, shares);
+    if shares > 0 && assets == 0 {
+        panic_with_error!(e, Error::PreviewZeroAssets);
+    }
+    assets
 }
 
 fn asset_balance_of_vault(e: &Env) -> i128 {
@@ -1697,3 +1729,5 @@ mod test_constructor_validation;
 mod test_overflow;
 #[cfg(test)]
 mod test_token;
+#[cfg(test)]
+mod test_rounding;
