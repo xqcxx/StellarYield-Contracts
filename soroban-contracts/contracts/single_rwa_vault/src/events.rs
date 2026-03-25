@@ -135,6 +135,21 @@ pub fn emit_admin_transferred(e: &Env, old_admin: Address, new_admin: Address) {
         .publish((symbol_short!("adm_xfr"),), (old_admin, new_admin));
 }
 
+/// Emitted by `set_rwa_details`, `set_rwa_document_uri`, or `set_expected_apy`.
+pub fn emit_rwa_details_updated(
+    e: &Env,
+    name: String,
+    symbol: String,
+    document_uri: String,
+    category: String,
+    expected_apy: u32,
+) {
+    e.events().publish(
+        (symbol_short!("rwa_upd"),),
+        (name, symbol, document_uri, category, expected_apy),
+    );
+}
+
 /// Emitted by `set_early_redemption_fee`.
 pub fn emit_early_redemption_fee_set(e: &Env, fee_bps: u32) {
     e.events().publish((symbol_short!("fee_set"),), fee_bps);

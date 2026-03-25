@@ -136,6 +136,59 @@ impl SingleRWAVault {
         get_rwa_category(e)
     }
 
+    /// Update all RWA metadata fields. Admin-only.
+    pub fn set_rwa_details(
+        e: &Env,
+        caller: Address,
+        name: String,
+        symbol: String,
+        document_uri: String,
+        category: String,
+        expected_apy: u32,
+    ) {
+        caller.require_auth();
+        require_admin(e, &caller);
+        put_rwa_name(e, name.clone());
+        put_rwa_symbol(e, symbol.clone());
+        put_rwa_document_uri(e, document_uri.clone());
+        put_rwa_category(e, category.clone());
+        put_expected_apy(e, expected_apy);
+        emit_rwa_details_updated(e, name, symbol, document_uri, category, expected_apy);
+        bump_instance(e);
+    }
+
+    /// Update only the RWA document URI. Admin-only.
+    pub fn set_rwa_document_uri(e: &Env, caller: Address, document_uri: String) {
+        caller.require_auth();
+        require_admin(e, &caller);
+        put_rwa_document_uri(e, document_uri.clone());
+        emit_rwa_details_updated(
+            e,
+            get_rwa_name(e),
+            get_rwa_symbol(e),
+            document_uri,
+            get_rwa_category(e),
+            get_expected_apy(e),
+        );
+        bump_instance(e);
+    }
+
+    /// Update only the expected APY. Admin-only.
+    pub fn set_expected_apy(e: &Env, caller: Address, expected_apy: u32) {
+        caller.require_auth();
+        require_admin(e, &caller);
+        put_expected_apy(e, expected_apy);
+        emit_rwa_details_updated(
+            e,
+            get_rwa_name(e),
+            get_rwa_symbol(e),
+            get_rwa_document_uri(e),
+            get_rwa_category(e),
+            expected_apy,
+        );
+        bump_instance(e);
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // zkMe KYC
     // ─────────────────────────────────────────────────────────────────
@@ -1695,5 +1748,7 @@ mod test_close_vault;
 mod test_constructor_validation;
 #[cfg(test)]
 mod test_overflow;
+#[cfg(test)]
+mod test_rwa_setters;
 #[cfg(test)]
 mod test_token;
