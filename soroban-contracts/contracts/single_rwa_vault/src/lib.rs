@@ -1649,7 +1649,7 @@ mod test {
             zkme_verifier: kyc,
             cooperator: admin.clone(),
             funding_target: 1000_0000000,
-            maturity_date: 0,
+            maturity_date: 9999999999,
             funding_deadline: 0,
             min_deposit: 1_0000000,
             max_deposit_per_user: 0,
@@ -1677,10 +1677,10 @@ mod test {
         assert_eq!(client.is_blacklisted(&user), false);
 
         client.set_blacklisted(&admin, &user, &true);
-        assert_eq!(client.is_blacklisted(&user), true);
+        assert!(client.is_blacklisted(&user));
 
         client.set_blacklisted(&admin, &user, &false);
-        assert_eq!(client.is_blacklisted(&user), false);
+        assert!(!client.is_blacklisted(&user));
     }
 
     #[test]

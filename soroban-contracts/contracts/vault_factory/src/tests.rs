@@ -45,6 +45,7 @@ fn inject_vault(e: &Env, factory_id: &Address, active: bool) -> Address {
     let vault = Address::generate(e);
     let info = VaultInfo {
         vault: vault.clone(),
+        asset: vault.clone(),
         vault_type: VaultType::SingleRwa,
         name: String::from_str(e, "Test Vault"),
         symbol: String::from_str(e, "TV"),

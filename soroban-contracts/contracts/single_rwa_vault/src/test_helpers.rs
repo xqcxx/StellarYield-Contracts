@@ -253,7 +253,7 @@ fn default_params(
         maturity_date: 9_999_999_999u64,      // far future
         funding_deadline: 9_999_999_999u64,   // far future (no effective deadline by default)
         min_deposit: 1_000_000i128,           // 1 USDC
-        max_deposit_per_user: 50_000_000i128, // 50 USDC
+        max_deposit_per_user: 1_000_000_000i128, // 1000 USDC
         early_redemption_fee_bps: 200u32,     // 2 %
         rwa_name: String::from_str(env, "US Treasury Bond 2026"),
         rwa_symbol: String::from_str(env, "USTB26"),

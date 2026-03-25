@@ -199,7 +199,8 @@ fn test_set_min_deposit_negative_panics() {
 #[should_panic(expected = "Error(Contract, #28)")]
 fn test_set_min_deposit_above_existing_max_panics() {
     let ctx = setup_with_kyc_bypass();
-    // Default max is 50_000_000; try to set min to 60_000_000
+    // Set max to 50_000_000 first, then try to set min to 60_000_000
+    ctx.vault().set_max_deposit_per_user(&ctx.operator, &50_000_000i128);
     ctx.vault().set_min_deposit(&ctx.operator, &60_000_000i128);
 }
 

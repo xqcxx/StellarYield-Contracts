@@ -1,9 +1,6 @@
 extern crate std;
 
-use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    Address, Env,
-};
+use soroban_sdk::Address;
 
 use crate::test_helpers::{mint_usdc, setup, TestContext};
 
