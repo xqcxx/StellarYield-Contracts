@@ -16,4 +16,6 @@ pub enum Error {
     InvalidInitParams = 6,
     /// Batch size exceeds the maximum allowed limit.
     BatchTooLarge = 7,
+    /// Provided WASM hash is invalid (e.g. all-zeros).
+    InvalidWasmHash = 8,
 }
