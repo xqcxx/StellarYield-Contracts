@@ -1020,7 +1020,6 @@ impl SingleRWAVault {
 
     pub fn set_deposit_limits(e: &Env, caller: Address, min_amount: i128, max_amount: i128) {
         caller.require_auth();
-        require_not_paused(e);
 
         // --- Validation ---
         if min_amount < 0 || max_amount < 0 {
@@ -1037,7 +1036,7 @@ impl SingleRWAVault {
         // All other states: not permitted.
         let state = get_vault_state(e);
         match state {
-            VaultState::Funding => require_operator(e, &caller),
+            VaultState::Funding => require_role(e, &caller, Role::FullOperator),
             VaultState::Active => require_admin(e, &caller),
             _ => panic_with_error!(e, Error::InvalidVaultState),
         }
@@ -1053,7 +1052,6 @@ impl SingleRWAVault {
     /// State guard: callable by any operator during Funding; only by admin during Active.
     pub fn set_min_deposit(e: &Env, caller: Address, amount: i128) {
         caller.require_auth();
-        require_not_paused(e);
 
         if amount < 0 {
             panic_with_error!(e, Error::InvalidDepositLimits);
@@ -1066,7 +1064,7 @@ impl SingleRWAVault {
 
         let state = get_vault_state(e);
         match state {
-            VaultState::Funding => require_operator(e, &caller),
+            VaultState::Funding => require_role(e, &caller, Role::FullOperator),
             VaultState::Active => require_admin(e, &caller),
             _ => panic_with_error!(e, Error::InvalidVaultState),
         }
@@ -1083,7 +1081,6 @@ impl SingleRWAVault {
     /// existing position — only new deposits will be blocked.
     pub fn set_max_deposit_per_user(e: &Env, caller: Address, amount: i128) {
         caller.require_auth();
-        require_not_paused(e);
 
         if amount < 0 {
             panic_with_error!(e, Error::InvalidDepositLimits);
@@ -1096,7 +1093,7 @@ impl SingleRWAVault {
 
         let state = get_vault_state(e);
         match state {
-            VaultState::Funding => require_operator(e, &caller),
+            VaultState::Funding => require_role(e, &caller, Role::FullOperator),
             VaultState::Active => require_admin(e, &caller),
             _ => panic_with_error!(e, Error::InvalidVaultState),
         }

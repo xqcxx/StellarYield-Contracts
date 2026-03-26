@@ -55,5 +55,5 @@ pub enum Error {
     MigrationRequired = 31,
     /// Burn requires pending yield to be claimed first (Option A).
     BurnRequiresYieldClaim = 32,
-    InvalidDepositLimits = 30,
+    InvalidDepositLimits = 33,
 }
