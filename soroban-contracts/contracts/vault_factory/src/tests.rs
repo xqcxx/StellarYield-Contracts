@@ -103,6 +103,82 @@ fn test_get_vault_info_includes_underlying_asset() {
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── Empty registry (#170) ───────────────────────────────────────────────────
+
+/// get_all_vaults returns an empty vec when no vaults have been created yet.
+#[test]
+fn test_get_all_vaults_returns_empty_when_no_vaults() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _) = setup_factory(&e);
+
+    let all = client.get_all_vaults();
+    assert_eq!(
+        all.len(),
+        0,
+        "get_all_vaults must return an empty vec when the registry is empty"
+    );
+}
+
+/// get_active_vaults returns an empty vec when no vaults have been created yet.
+#[test]
+fn test_get_active_vaults_returns_empty_when_no_vaults() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _) = setup_factory(&e);
+
+    let active = client.get_active_vaults();
+    assert_eq!(
+        active.len(),
+        0,
+        "get_active_vaults must return an empty vec when the registry is empty"
+    );
+}
+
+/// get_vault_count returns 0 when no vaults have been created yet.
+#[test]
+fn test_get_vault_count_is_zero_when_no_vaults() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _) = setup_factory(&e);
+
+    assert_eq!(
+        client.get_vault_count(),
+        0u32,
+        "vault count must be 0 when no vaults exist"
+    );
+}
+
+/// get_vaults_paginated returns an empty vec when the registry is empty.
+#[test]
+fn test_get_vaults_paginated_returns_empty_when_no_vaults() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _) = setup_factory(&e);
+
+    let page = client.get_vaults_paginated(&0, &10);
+    assert_eq!(
+        page.len(),
+        0,
+        "get_vaults_paginated must return an empty vec when the registry is empty"
+    );
+}
+
+/// get_active_vaults_paginated returns an empty vec when the registry is empty.
+#[test]
+fn test_get_active_vaults_paginated_returns_empty_when_no_vaults() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (client, _) = setup_factory(&e);
+
+    let page = client.get_active_vaults_paginated(&0, &10);
+    assert_eq!(
+        page.len(),
+        0,
+        "get_active_vaults_paginated must return an empty vec when the registry is empty"
+    );
+}
+
 // ─── ActiveVaults list ────────────────────────────────────────────────────────
 
 /// set_vault_status keeps ActiveVaults in sync: deactivating removes,
