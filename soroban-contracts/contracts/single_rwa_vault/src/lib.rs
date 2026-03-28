@@ -13,19 +13,53 @@ mod fuzz_tests;
 #[cfg(test)]
 mod test_allowance_ttl;
 #[cfg(test)]
+mod test_access_control;
+#[cfg(test)]
 mod test_burn_snapshot;
 #[cfg(test)]
 mod test_burn_yield_accounting;
 #[cfg(test)]
 mod test_claim_cursor;
 #[cfg(test)]
+mod test_close_vault;
+#[cfg(test)]
+mod test_constructor;
+#[cfg(test)]
+mod test_constructor_validation;
+#[cfg(test)]
 mod test_convert_erc4626;
+#[cfg(test)]
+mod test_deposit_limits;
 #[cfg(test)]
 mod test_epoch_history;
 #[cfg(test)]
+mod test_escrow;
+#[cfg(test)]
+mod test_freeze_flags;
+#[cfg(test)]
 mod test_funding_deadline;
 #[cfg(test)]
+mod test_helpers;
+#[cfg(test)]
 mod test_lifecycle;
+#[cfg(test)]
+mod test_multisig_emergency;
+#[cfg(test)]
+mod test_overflow;
+#[cfg(test)]
+mod test_rbac;
+#[cfg(test)]
+mod test_redemption;
+#[cfg(test)]
+mod test_rwa_setters;
+#[cfg(test)]
+mod test_token;
+#[cfg(test)]
+mod test_vault_state_guards;
+#[cfg(test)]
+mod test_withdraw;
+#[cfg(test)]
+mod tests;
 
 pub use crate::types::*;
 
@@ -54,6 +88,9 @@ impl SingleRWAVault {
     pub const FREEZE_YIELD: u32 = 4;
     pub const FREEZE_ALL: u32 =
         Self::FREEZE_DEPOSIT_MINT | Self::FREEZE_WITHDRAW_REDEEM | Self::FREEZE_YIELD;
+
+    /// Timeout for emergency proposals: 24 hours in seconds.
+    pub const EMERGENCY_PROPOSAL_TIMEOUT: u64 = 86400;
 
     // ─────────────────────────────────────────────────────────────────
     // Constructor
@@ -296,6 +333,16 @@ impl SingleRWAVault {
             }
         }
 
+        if get_vault_state(e) == VaultState::Funding {
+            let target = get_funding_target(e);
+            if target > 0 {
+                let current = total_assets(e);
+                if current + assets > target {
+                    panic_with_error!(e, Error::FundingTargetExceeded);
+                }
+            }
+        }
+
         // Shares = assets (1:1 at start; yield accrual changes the price)
         let shares = preview_deposit(e, assets);
 
@@ -339,6 +386,16 @@ impl SingleRWAVault {
             let already = get_user_deposited(e, &receiver);
             if already + assets > max_dep {
                 panic_with_error!(e, Error::ExceedsMaximumDeposit);
+            }
+        }
+
+        if get_vault_state(e) == VaultState::Funding {
+            let target = get_funding_target(e);
+            if target > 0 {
+                let current = total_assets(e);
+                if current + assets > target {
+                    panic_with_error!(e, Error::FundingTargetExceeded);
+                }
             }
         }
 
@@ -405,6 +462,9 @@ impl SingleRWAVault {
         _burn(e, &owner, shares);
         put_total_deposited(e, get_total_deposited(e) - assets);
 
+        let user_dep = get_user_deposited(e, &owner);
+        put_user_deposited(e, &owner, (user_dep - assets).max(0));
+
         // --- Interaction ---
         transfer_asset_from_vault(e, &receiver, assets);
 
@@ -456,6 +516,9 @@ impl SingleRWAVault {
         _burn(e, &owner, shares);
         put_total_deposited(e, get_total_deposited(e) - assets);
 
+        let user_dep = get_user_deposited(e, &owner);
+        put_user_deposited(e, &owner, (user_dep - assets).max(0));
+
         // --- Interaction ---
         transfer_asset_from_vault(e, &receiver, assets);
 
@@ -469,15 +532,25 @@ impl SingleRWAVault {
     // ERC-4626 preview helpers
     // ─────────────────────────────────────────────────────────────────
 
+    /// ERC-4626 `previewDeposit`: shares received for `assets` deposited (rounding **down**).
+    /// Favors the vault — user receives fewer shares than the ideal rational amount.
+    /// Reverts when `assets > 0` but the rounded share amount is 0 (dust donation guard).
     pub fn preview_deposit(e: &Env, assets: i128) -> i128 {
         preview_deposit(e, assets)
     }
+    /// ERC-4626 `previewMint`: assets paid to mint exactly `shares` (rounding **up**).
+    /// Favors the vault — user pays at least the ideal asset amount.
     pub fn preview_mint(e: &Env, shares: i128) -> i128 {
         preview_mint(e, shares)
     }
+    /// ERC-4626 `previewWithdraw`: shares burned to withdraw exactly `assets` (rounding **up**).
+    /// Favors the vault — user burns at least the ideal share amount.
     pub fn preview_withdraw(e: &Env, assets: i128) -> i128 {
         preview_withdraw(e, assets)
     }
+    /// ERC-4626 `previewRedeem`: assets received when redeeming `shares` (rounding **down**).
+    /// Favors the vault — user receives fewer assets than the ideal rational amount.
+    /// Reverts when `shares > 0` but the rounded asset amount is 0 (dust redemption guard).
     pub fn preview_redeem(e: &Env, shares: i128) -> i128 {
         preview_redeem(e, shares)
     }
@@ -525,11 +598,23 @@ impl SingleRWAVault {
             return 0;
         }
         let cap = get_max_deposit_per_user(e);
-        if cap == 0 {
-            return i128::MAX;
+        let mut max_allowed = if cap == 0 {
+            i128::MAX
+        } else {
+            let already = get_user_deposited(e, &receiver);
+            (cap - already).max(0)
+        };
+
+        if state == VaultState::Funding {
+            let target = get_funding_target(e);
+            if target > 0 {
+                let current = total_assets(e);
+                let remaining = (target - current).max(0);
+                max_allowed = max_allowed.min(remaining);
+            }
         }
-        let already = get_user_deposited(e, &receiver);
-        (cap - already).max(0)
+
+        max_allowed
     }
 
     /// Maximum shares `receiver` can obtain via `mint` right now.
@@ -543,7 +628,9 @@ impl SingleRWAVault {
         if max_assets == i128::MAX {
             return i128::MAX;
         }
-        preview_deposit(e, max_assets)
+        // Floor conversion — may be 0 when `max_deposit` is below one full share in
+        // asset terms; must not panic (unlike `preview_deposit` for user-supplied amounts).
+        convert_to_shares_floor(e, max_assets)
     }
 
     /// Maximum assets `owner` can withdraw right now.
@@ -557,7 +644,8 @@ impl SingleRWAVault {
             return 0;
         }
         let shares = get_share_balance(e, &owner);
-        preview_redeem(e, shares)
+        // Floor conversion for a view helper — may be 0 for dust balances; must not panic.
+        convert_to_assets_floor(e, shares)
     }
 
     /// Maximum shares `owner` can redeem right now (their full share balance).
@@ -1158,6 +1246,9 @@ impl SingleRWAVault {
         _burn(e, &owner, shares);
         put_total_deposited(e, get_total_deposited(e) - assets);
 
+        let user_dep = get_user_deposited(e, &owner);
+        put_user_deposited(e, &owner, (user_dep - assets).max(0));
+
         let mut total_out = assets;
         if pending > 0 {
             total_out += pending;
@@ -1242,25 +1333,27 @@ impl SingleRWAVault {
             panic_with_error!(e, Error::AlreadyProcessed);
         }
 
-        // --- Effects ---
-        req.processed = true;
-        put_redemption_request(e, request_id, req.clone());
-
-        // Burn from escrow
         let escrowed = get_escrowed_shares(e, &req.user);
         if escrowed < req.shares {
-            // This should ideally not happen if logic is correct
             panic_with_error!(e, Error::InsufficientBalance);
         }
-        put_escrowed_shares(e, &req.user, escrowed - req.shares);
-        put_total_supply(e, get_total_supply(e) - req.shares);
-        // Note: update_user_snapshot was already called at request time
 
+        // Payout math before irreversible updates — `preview_redeem` may panic on dust
+        // (ERC-4626 zero-asset guard) and must not run after escrow/supply are changed.
         let assets = preview_redeem(e, req.shares);
         let fee_bps = get_early_redemption_fee_bps(e) as i128;
         let fee = math::mul_div(e, assets, fee_bps, 10000);
         let net_assets = assets - fee;
+
+        // --- Effects ---
+        req.processed = true;
+        put_redemption_request(e, request_id, req.clone());
+        put_escrowed_shares(e, &req.user, escrowed - req.shares);
+        put_total_supply(e, get_total_supply(e) - req.shares);
         put_total_deposited(e, get_total_deposited(e) - net_assets);
+
+        let user_dep = get_user_deposited(e, &req.user);
+        put_user_deposited(e, &req.user, (user_dep - net_assets).max(0));
 
         // --- Interaction ---
         transfer_asset_from_vault(e, &req.user, net_assets);
@@ -1496,6 +1589,11 @@ impl SingleRWAVault {
 
     /// Drain all vault assets to `recipient` and pause the vault.
     ///
+    /// If no multi-sig signers are configured, falls back to single-admin
+    /// behaviour (TreasuryManager or admin required).  When multi-sig is
+    /// configured this function panics — use `propose_emergency_withdraw` /
+    /// `approve_emergency_withdraw` / `execute_emergency_withdraw` instead.
+    ///
     /// Security: follows CEI — the vault is paused (Effect) before the asset
     /// transfer (Interaction) so that any reentrant call is rejected by
     /// `require_not_paused`.  Reentrancy lock provides an additional hard stop.
@@ -1503,6 +1601,13 @@ impl SingleRWAVault {
         caller.require_auth();
         // --- Checks ---
         acquire_lock(e);
+
+        // If multi-sig is configured, single-key path is disabled.
+        if get_emergency_signers(e).is_some() {
+            release_lock(e);
+            panic_with_error!(e, Error::NotSupported);
+        }
+
         // TreasuryManager role required — also passes for FullOperator and admin.
         require_role(e, &caller, Role::TreasuryManager);
 
@@ -1521,12 +1626,137 @@ impl SingleRWAVault {
         if balance > 0 {
             transfer_asset_from_vault(e, &recipient, balance);
         }
+        bump_instance(e);
+        release_lock(e);
+    }
+
+    /// Configure the multi-sig signer set and approval threshold for
+    /// emergency withdrawals.  Admin-only.
+    ///
+    /// Setting signers to an empty vec clears the multi-sig configuration and
+    /// re-enables the single-admin `emergency_withdraw` fallback.
+    pub fn set_emergency_signers(e: &Env, caller: Address, signers: Vec<Address>, threshold: u32) {
+        caller.require_auth();
+        require_admin(e, &caller);
+
+        if signers.is_empty() {
+            // Clear multi-sig; restore single-admin fallback.
+            remove_emergency_signers(e);
+            remove_emergency_threshold(e);
+            bump_instance(e);
+            return;
+        }
+
+        if threshold == 0 || threshold > signers.len() {
+            panic_with_error!(e, Error::InvalidThreshold);
+        }
+
+        put_emergency_signers(e, signers);
+        put_emergency_threshold(e, threshold);
+        bump_instance(e);
+    }
+
+    /// Any configured emergency signer may propose a withdrawal to `recipient`.
+    /// Returns the new proposal ID.
+    pub fn propose_emergency_withdraw(e: &Env, caller: Address, recipient: Address) -> u32 {
+        caller.require_auth();
+        require_emergency_signer(e, &caller);
+
+        let proposal_id = increment_emergency_proposal_counter(e);
+        let proposal = EmergencyProposal {
+            recipient: recipient.clone(),
+            proposed_at: e.ledger().timestamp(),
+            executed: false,
+        };
+        put_emergency_proposal(e, proposal_id, proposal);
+
+        // Proposer implicitly approves.
+        let mut approvals: Vec<Address> = Vec::new(e);
+        approvals.push_back(caller.clone());
+        put_emergency_proposal_approvals(e, proposal_id, approvals);
+
+        emit_emergency_proposed(e, proposal_id, caller, recipient);
+        bump_instance(e);
+        proposal_id
+    }
+
+    /// A configured emergency signer approves proposal `proposal_id`.
+    pub fn approve_emergency_withdraw(e: &Env, caller: Address, proposal_id: u32) {
+        caller.require_auth();
+        require_emergency_signer(e, &caller);
+
+        let proposal = get_emergency_proposal(e, proposal_id)
+            .unwrap_or_else(|| panic_with_error!(e, Error::ProposalNotFound));
+
+        if proposal.executed {
+            panic_with_error!(e, Error::ProposalAlreadyExecuted);
+        }
+
+        let now = e.ledger().timestamp();
+        if now > proposal.proposed_at + Self::EMERGENCY_PROPOSAL_TIMEOUT {
+            panic_with_error!(e, Error::ProposalExpired);
+        }
+
+        let mut approvals = get_emergency_proposal_approvals(e, proposal_id);
+        // Ensure no double-approval.
+        for i in 0..approvals.len() {
+            if approvals.get(i).unwrap() == caller {
+                panic_with_error!(e, Error::AlreadyApproved);
+            }
+        }
+
+        approvals.push_back(caller.clone());
+        let count = approvals.len();
+        put_emergency_proposal_approvals(e, proposal_id, approvals);
+
+        emit_emergency_approved(e, proposal_id, caller, count);
+        bump_instance(e);
+    }
+
+    /// Execute proposal `proposal_id` once the approval threshold is met.
+    /// Any signer may call this; the proposal must not be expired or already executed.
+    pub fn execute_emergency_withdraw(e: &Env, caller: Address, proposal_id: u32) {
+        caller.require_auth();
+        require_emergency_signer(e, &caller);
+        acquire_lock(e);
+
+        let mut proposal = get_emergency_proposal(e, proposal_id)
+            .unwrap_or_else(|| panic_with_error!(e, Error::ProposalNotFound));
+
+        if proposal.executed {
+            release_lock(e);
+            panic_with_error!(e, Error::ProposalAlreadyExecuted);
+        }
+
+        let now = e.ledger().timestamp();
+        if now > proposal.proposed_at + Self::EMERGENCY_PROPOSAL_TIMEOUT {
+            release_lock(e);
+            panic_with_error!(e, Error::ProposalExpired);
+        }
+
+        let approvals = get_emergency_proposal_approvals(e, proposal_id);
+        let threshold = get_emergency_threshold(e);
+        if approvals.len() < threshold {
+            release_lock(e);
+            panic_with_error!(e, Error::ThresholdNotMet);
+        }
+
+        // Mark executed before transferring (CEI pattern).
+        proposal.executed = true;
+        put_emergency_proposal(e, proposal_id, proposal.clone());
+
+        let balance = asset_balance_of_vault(e);
+
+        // --- Effects ---
         put_paused(e, true);
-        emit_emergency_action(
-            e,
-            true,
-            String::from_str(e, "Emergency withdrawal executed"),
-        );
+        put_freeze_flags(e, Self::FREEZE_ALL);
+
+        // --- Interaction ---
+        if balance > 0 {
+            transfer_asset_from_vault(e, &proposal.recipient, balance);
+        }
+
+        emit_emergency_executed(e, proposal_id, proposal.recipient, balance);
         bump_instance(e);
         release_lock(e);
     }
@@ -1814,14 +2044,26 @@ fn total_assets(e: &Env) -> i128 {
     get_total_deposited(e)
 }
 
-fn preview_deposit(e: &Env, assets: i128) -> i128 {
+/// `convertToShares` with **floor** division: `floor(assets * totalSupply / totalAssets)`.
+/// ERC-4626 deposit path rounds down (vault-favorable). Used by `max_mint` where a 0
+/// result is valid; `preview_deposit` adds a dust guard on top.
+fn convert_to_shares_floor(e: &Env, assets: i128) -> i128 {
     let supply = get_total_supply(e);
     let ta = total_assets(e);
     if supply == 0 || ta == 0 {
         return assets;
     }
-    // shares = assets * totalSupply / totalAssets
     math::mul_div(e, assets, supply, ta)
+}
+
+fn preview_deposit(e: &Env, assets: i128) -> i128 {
+    // ERC-4626: round **down** on deposit so the user receives fewer shares than the
+    // exact rational amount — protects existing LPs from dilution via rounding.
+    let shares = convert_to_shares_floor(e, assets);
+    if assets > 0 && shares == 0 {
+        panic_with_error!(e, Error::PreviewZeroShares);
+    }
+    shares
 }
 
 fn preview_mint(e: &Env, shares: i128) -> i128 {
@@ -1830,7 +2072,8 @@ fn preview_mint(e: &Env, shares: i128) -> i128 {
     if supply == 0 || ta == 0 {
         return shares;
     }
-    // assets = shares * totalAssets / totalSupply  (ceil)
+    // ERC-4626: round **up** on mint so the user pays at least the fair asset amount
+    // for the requested shares — vault-favorable, symmetric to deposit rounding down.
     math::mul_div_ceil(e, shares, ta, supply)
 }
 
@@ -1840,24 +2083,31 @@ fn preview_withdraw(e: &Env, assets: i128) -> i128 {
     if supply == 0 || ta == 0 {
         return assets;
     }
-    // shares = assets * totalSupply / totalAssets  (ceil)
+    // ERC-4626: round **up** on withdraw so the user burns at least the shares needed
+    // to cover `assets` — vault-favorable (user cannot withdraw “too cheaply”).
     math::mul_div_ceil(e, assets, supply, ta)
 }
 
-fn preview_redeem(e: &Env, shares: i128) -> i128 {
+/// `convertToAssets` with **floor** division: `floor(shares * totalAssets / totalSupply)`.
+/// ERC-4626 redeem path rounds down (vault-favorable). Used by `max_withdraw` where 0 is
+/// valid; `preview_redeem` adds a dust guard on top.
+fn convert_to_assets_floor(e: &Env, shares: i128) -> i128 {
     let supply = get_total_supply(e);
     let ta = total_assets(e);
     if supply == 0 {
         return shares;
     }
-    // assets = shares * totalAssets / (totalSupply + totalEscrowedShares)
-    // Actually total_supply already includes escrowed shares if we don't subtract them.
-    // Let's check how _mint/_burn affect it.
-    // _mint adds to total_supply.
-    // _burn subtracts from total_supply.
-    // My request_early_redemption does NOT _burn, so total_supply is unchanged.
-    // So total_supply ALREADY includes escrowed shares.
     math::mul_div(e, shares, ta, supply)
+}
+
+fn preview_redeem(e: &Env, shares: i128) -> i128 {
+    // ERC-4626: round **down** on redeem so the user receives fewer assets than the
+    // exact rational amount — protects the vault from paying out extra on rounding.
+    let assets = convert_to_assets_floor(e, shares);
+    if shares > 0 && assets == 0 {
+        panic_with_error!(e, Error::PreviewZeroAssets);
+    }
+    assets
 }
 
 fn asset_balance_of_vault(e: &Env) -> i128 {
@@ -2039,6 +2289,22 @@ fn release_lock(e: &Env) {
     put_locked(e, false);
 }
 
+/// Panics with `NotEmergencySigner` if `caller` is not in the emergency signers list.
+fn require_emergency_signer(e: &Env, caller: &Address) {
+    let signers =
+        get_emergency_signers(e).unwrap_or_else(|| panic_with_error!(e, Error::NotEmergencySigner));
+    let mut found = false;
+    for i in 0..signers.len() {
+        if signers.get(i).unwrap() == *caller {
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        panic_with_error!(e, Error::NotEmergencySigner);
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2196,36 +2462,3 @@ mod test {
         client.deposit(&depositor, &10_0000000, &depositor);
     }
 }
-
-#[cfg(test)]
-mod test_access_control;
-#[cfg(test)]
-mod test_constructor;
-#[cfg(test)]
-mod test_escrow;
-#[cfg(test)]
-pub mod test_helpers;
-#[cfg(test)]
-mod test_rbac;
-#[cfg(test)]
-mod test_redemption;
-#[cfg(test)]
-mod test_withdraw;
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-mod test_freeze_flags;
-
-#[cfg(test)]
-mod test_close_vault;
-#[cfg(test)]
-mod test_constructor_validation;
-#[cfg(test)]
-mod test_deposit_limits;
-#[cfg(test)]
-mod test_overflow;
-#[cfg(test)]
-mod test_rwa_setters;
-#[cfg(test)]
-mod test_token;

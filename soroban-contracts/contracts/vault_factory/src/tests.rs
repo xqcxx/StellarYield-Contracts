@@ -68,6 +68,37 @@ fn inject_vault(e: &Env, factory_id: &Address, active: bool) -> Address {
     vault
 }
 
+/// `VaultInfo.asset` is stored in the registry and returned by `get_vault_info` so
+/// indexers can resolve the underlying asset without N+1 vault calls.
+#[test]
+fn test_get_vault_info_includes_underlying_asset() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let (client, _) = setup_factory(&e);
+    let factory_id = client.address.clone();
+
+    let vault = Address::generate(&e);
+    let asset = Address::generate(&e);
+    let info = VaultInfo {
+        vault: vault.clone(),
+        asset: asset.clone(),
+        vault_type: VaultType::SingleRwa,
+        name: String::from_str(&e, "Asset Test"),
+        symbol: String::from_str(&e, "AT"),
+        active: true,
+        created_at: e.ledger().timestamp(),
+    };
+
+    e.as_contract(&factory_id, || {
+        put_vault_info(&e, &vault, info);
+    });
+
+    let got = client.get_vault_info(&vault).unwrap();
+    assert_eq!(got.asset, asset);
+    assert_eq!(got.vault, vault);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────

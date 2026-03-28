@@ -160,3 +160,12 @@ pub struct UserEpochYield {
     pub yield_earned: i128,
     pub claimed: bool,
 }
+
+/// A pending multi-sig emergency withdrawal proposal.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EmergencyProposal {
+    pub recipient: Address,
+    pub proposed_at: u64,
+    pub executed: bool,
+}

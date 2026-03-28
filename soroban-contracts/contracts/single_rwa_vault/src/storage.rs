@@ -12,7 +12,7 @@
 //! INSTANCE_BUMP_AMOUNT  ≈ 30 days
 //! BALANCE_BUMP_AMOUNT   ≈ 60 days
 
-use soroban_sdk::{contracttype, panic_with_error, Address, Env, String};
+use soroban_sdk::{contracttype, panic_with_error, Address, Env, String, Vec};
 
 use crate::errors::Error;
 use crate::types::{RedemptionRequest, Role, VaultState};
@@ -123,6 +123,26 @@ pub enum DataKey {
     EmergencyBalance,
     HasClaimedEmergency(Address),
     EmergencyTotalSupplySnapshot,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Separate key enum for multi-sig emergency (DataKey is at the 50-variant XDR
+// limit, so new keys live here to avoid the LengthExceedsMax compile error).
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub enum EmergencyDataKey {
+    /// Configured list of emergency signers.
+    Signers,
+    /// Required number of approvals to execute a proposal.
+    Threshold,
+    /// Proposal data keyed by proposal ID.
+    Proposal(u32),
+    /// Set of addresses that have approved a given proposal ID.
+    Approvals(u32),
+    /// Monotonically-increasing counter used to generate proposal IDs.
+    Counter,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -728,6 +748,85 @@ pub fn get_has_claimed_emergency(e: &Env, addr: &Address) -> bool {
 pub fn put_has_claimed_emergency(e: &Env, addr: &Address, val: bool) {
     let key = DataKey::HasClaimedEmergency(addr.clone());
     e.storage().persistent().set(&key, &val);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-sig emergency storage helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub fn get_emergency_signers(e: &Env) -> Option<Vec<Address>> {
+    e.storage().instance().get(&EmergencyDataKey::Signers)
+}
+
+pub fn put_emergency_signers(e: &Env, signers: Vec<Address>) {
+    e.storage()
+        .instance()
+        .set(&EmergencyDataKey::Signers, &signers);
+}
+
+pub fn remove_emergency_signers(e: &Env) {
+    e.storage().instance().remove(&EmergencyDataKey::Signers);
+}
+
+pub fn get_emergency_threshold(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get(&EmergencyDataKey::Threshold)
+        .unwrap_or(0)
+}
+
+pub fn put_emergency_threshold(e: &Env, threshold: u32) {
+    e.storage()
+        .instance()
+        .set(&EmergencyDataKey::Threshold, &threshold);
+}
+
+pub fn remove_emergency_threshold(e: &Env) {
+    e.storage().instance().remove(&EmergencyDataKey::Threshold);
+}
+
+pub fn get_emergency_proposal_counter(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get(&EmergencyDataKey::Counter)
+        .unwrap_or(0)
+}
+
+pub fn increment_emergency_proposal_counter(e: &Env) -> u32 {
+    let next = get_emergency_proposal_counter(e) + 1;
+    e.storage()
+        .instance()
+        .set(&EmergencyDataKey::Counter, &next);
+    next
+}
+
+pub fn get_emergency_proposal(e: &Env, id: u32) -> Option<crate::types::EmergencyProposal> {
+    e.storage()
+        .persistent()
+        .get(&EmergencyDataKey::Proposal(id))
+}
+
+pub fn put_emergency_proposal(e: &Env, id: u32, proposal: crate::types::EmergencyProposal) {
+    let key = EmergencyDataKey::Proposal(id);
+    e.storage().persistent().set(&key, &proposal);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
+}
+
+pub fn get_emergency_proposal_approvals(e: &Env, id: u32) -> Vec<Address> {
+    e.storage()
+        .persistent()
+        .get(&EmergencyDataKey::Approvals(id))
+        .unwrap_or_else(|| Vec::new(e))
+}
+
+pub fn put_emergency_proposal_approvals(e: &Env, id: u32, approvals: Vec<Address>) {
+    let key = EmergencyDataKey::Approvals(id);
+    e.storage().persistent().set(&key, &approvals);
     e.storage()
         .persistent()
         .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
