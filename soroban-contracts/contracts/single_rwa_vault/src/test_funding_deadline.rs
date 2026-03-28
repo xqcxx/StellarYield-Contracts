@@ -123,6 +123,45 @@ fn test_activate_vault_succeeds_before_deadline() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Boundary: timestamp == funding_deadline (#173)
+// Contract: activate uses `now > deadline`; cancel uses `now <= deadline` → not passed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// When `ledger.timestamp == funding_deadline`, activation still succeeds (deadline has not
+/// strictly passed).
+#[test]
+fn test_activate_vault_succeeds_at_exact_funding_deadline() {
+    let deadline = 5_000u64;
+    let ctx = deploy(deadline);
+    let vault = ctx.vault();
+
+    ctx.asset().mint(&ctx.user, &100_000_000i128);
+    vault.deposit(&ctx.user, &100_000_000i128, &ctx.user);
+
+    ctx.env.ledger().with_mut(|li| li.timestamp = deadline);
+    assert_eq!(ctx.env.ledger().timestamp(), deadline);
+
+    vault.activate_vault(&ctx.admin);
+    assert_eq!(vault.vault_state(), VaultState::Active);
+}
+
+/// When `ledger.timestamp == funding_deadline`, cancel_funding still fails — the deadline is
+/// treated as inclusive on the "not yet passed" side (`now <= deadline` panics).
+#[test]
+#[should_panic]
+fn test_cancel_funding_fails_at_exact_funding_deadline() {
+    let deadline = 5_000u64;
+    let ctx = deploy(deadline);
+    let vault = ctx.vault();
+
+    ctx.asset().mint(&ctx.user, &10_000_000i128);
+    vault.deposit(&ctx.user, &10_000_000i128, &ctx.user);
+
+    ctx.env.ledger().with_mut(|li| li.timestamp = deadline);
+    vault.cancel_funding(&ctx.admin);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Test: activate_vault fails after deadline  (Error::FundingDeadlinePassed = 16)
 // ─────────────────────────────────────────────────────────────────────────────
 
