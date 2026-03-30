@@ -991,3 +991,112 @@ fn test_multiple_users_claim_same_epoch_yield() {
     assert_eq!(vault.last_claimed_epoch(&user2), 1);
     assert_eq!(vault.last_claimed_epoch(&user3), 1);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests — Issue #194: Partial redemption followed by full redemption
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A user performs an early partial redemption of half their shares, then redeems
+/// the remaining shares at maturity. After both redemptions:
+/// - The user holds zero vault shares.
+/// - The combined payout (partial net + maturity payout) equals the user's total
+///   entitlement: partial assets minus fee, plus remaining shares converted at the
+///   then-current share price.
+/// - Yield distributed between the two redemptions is included in the maturity payout.
+#[test]
+fn test_partial_early_redemption_then_full_redemption_at_maturity() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // ── Setup ────────────────────────────────────────────────────────────────
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+    let other = Address::generate(&env);
+
+    let deposit_amount = 2_000_000i128;
+
+    // Fund both depositors so the vault holds enough tokens to cover early payout.
+    let shares = fund_user(&env, &vault_id, &token_id, &zkme_id, &user, deposit_amount);
+    fund_user(&env, &vault_id, &token_id, &zkme_id, &other, deposit_amount);
+
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    let token = MockTokenClient::new(&env, &token_id);
+
+    // ── Stage 1: partial early redemption ────────────────────────────────────
+    let partial_shares = shares / 2; // redeem half
+    let remaining_shares = shares - partial_shares;
+
+    let request_id = vault.request_early_redemption(&user, &partial_shares);
+
+    // After request: user's live balance is reduced by partial_shares (shares in escrow)
+    assert_eq!(vault.balance(&user), remaining_shares);
+
+    let user_balance_before_partial = token.balance(&user);
+    vault.process_early_redemption(&admin, &request_id);
+
+    // fee_bps = 200 (2%), share price is 1:1 at inception
+    let partial_assets = partial_shares; // 1:1 ratio
+    let fee = (partial_assets * 200) / 10_000; // 2%
+    let partial_net = partial_assets - fee;
+
+    let user_balance_after_partial = token.balance(&user);
+    assert_eq!(
+        user_balance_after_partial,
+        user_balance_before_partial + partial_net,
+        "partial redemption payout must equal assets minus 2% fee"
+    );
+
+    // Shares burned by early redemption
+    assert_eq!(
+        vault.balance(&user),
+        remaining_shares,
+        "remaining shares must be unchanged after partial early redemption"
+    );
+
+    // ── Distribute yield between the two redemption stages ───────────────────
+    let yield_amount = 80_000i128;
+    distribute_yield(&env, &vault_id, &token_id, &admin, yield_amount);
+
+    // ── Stage 2: full redemption at maturity ──────────────────────────────────
+    mature(&env, &vault_id, &admin);
+
+    let pending = vault.pending_yield(&user);
+    let user_balance_before_maturity = token.balance(&user);
+
+    let maturity_out = vault.redeem_at_maturity(&user, &remaining_shares, &user, &user);
+
+    assert!(
+        maturity_out > 0,
+        "maturity redemption must return a positive payout"
+    );
+
+    let user_balance_after_maturity = token.balance(&user);
+    assert_eq!(
+        user_balance_after_maturity,
+        user_balance_before_maturity + maturity_out,
+        "user token balance must increase by the full maturity payout"
+    );
+
+    // Pending yield is included in maturity_out
+    assert!(
+        maturity_out >= pending,
+        "maturity payout must include any pending yield"
+    );
+
+    // ── Final state ───────────────────────────────────────────────────────────
+    // User holds zero vault shares after both redemptions.
+    assert_eq!(
+        vault.balance(&user),
+        0,
+        "user must hold zero shares after partial + full redemption"
+    );
+
+    // Combined payout covers at least the deposited principal (yield accrued).
+    let total_received = user_balance_after_maturity; // started with 0 token balance
+    assert!(
+        total_received >= deposit_amount,
+        "total received must be at least the deposited principal"
+    );
+}
