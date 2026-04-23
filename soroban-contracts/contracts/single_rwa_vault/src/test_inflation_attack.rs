@@ -64,7 +64,7 @@ fn test_inflation_attack_mitigated() {
     // Attacker deposits 1 wei
     mint_asset(&env, &asset_id, &attacker, 1_000_001_i128);
     let attacker_shares = client.deposit(&attacker, &1_i128, &attacker);
-    
+
     // Without mitigation, attacker would get 1 share
     // With virtual offset, attacker gets shares based on (1 * (0 + OFFSET)) / (0 + OFFSET) = 1
     assert_eq!(attacker_shares, 1);
@@ -83,13 +83,16 @@ fn test_inflation_attack_mitigated() {
     // With mitigation: shares = 500000 * (supply + OFFSET) / (assets + OFFSET)
     // The virtual offset ensures victim_shares > 0
     assert!(victim_shares > 0, "Victim should receive shares");
-    
+
     // Verify victim got a reasonable share of the vault
     let total_supply = client.total_supply();
     let victim_percentage = (victim_shares * 100) / total_supply;
-    
+
     // Victim deposited 500k out of ~1.5M total, should get roughly 33% of shares
-    assert!(victim_percentage > 25, "Victim should get fair share percentage");
+    assert!(
+        victim_percentage > 25,
+        "Victim should get fair share percentage"
+    );
 }
 
 #[test]
@@ -108,10 +111,13 @@ fn test_first_deposit_tiny_amount() {
     // Second user deposits normal amount
     mint_asset(&env, &asset_id, &user2, 1_000_000_i128);
     let shares2 = client.deposit(&user2, &1_000_000_i128, &user2);
-    
+
     // Second user should get proportional shares
     assert!(shares2 > 0, "Second depositor should receive shares");
-    assert!(shares2 > shares1, "Second depositor should get more shares for larger deposit");
+    assert!(
+        shares2 > shares1,
+        "Second depositor should get more shares for larger deposit"
+    );
 }
 
 #[test]

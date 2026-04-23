@@ -148,12 +148,12 @@ fn test_yield_operator_can_distribute_yield() {
     // Activate vault so distribute_yield is reachable.
     let lm = Address::generate(&env);
     client.grant_role(&admin, &lm, &Role::LifecycleManager);
-    
+
     // Deposit first so there are shareholders (Issue #97 fix)
     let depositor = Address::generate(&env);
     mint_asset(&env, &asset_id, &depositor, 10_000_i128);
     client.deposit(&depositor, &10_000_i128, &depositor);
-    
+
     client.activate_vault(&lm);
 
     // Give the yield operator enough tokens to inject yield.

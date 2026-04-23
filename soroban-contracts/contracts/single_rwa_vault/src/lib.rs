@@ -577,8 +577,9 @@ impl SingleRWAVault {
         if supply == 0 || ta == 0 {
             return assets;
         }
-        // shares = assets * totalSupply / totalAssets (floor)
-        math::mul_div(e, assets, supply, ta)
+        // Apply virtual offset to prevent share price inflation attack (Issue #95)
+        // shares = assets * (supply + OFFSET) / (totalAssets + OFFSET) (floor)
+        math::mul_div(e, assets, supply + VIRTUAL_OFFSET, ta + VIRTUAL_OFFSET)
     }
 
     pub fn convert_to_assets(e: &Env, shares: i128) -> i128 {
@@ -587,8 +588,9 @@ impl SingleRWAVault {
         if supply == 0 {
             return shares;
         }
-        // assets = shares * totalAssets / totalSupply (floor)
-        math::mul_div(e, shares, ta, supply)
+        // Apply virtual offset to prevent share price inflation attack (Issue #95)
+        // assets = shares * (totalAssets + OFFSET) / (supply + OFFSET) (floor)
+        math::mul_div(e, shares, ta + VIRTUAL_OFFSET, supply + VIRTUAL_OFFSET)
     }
 
     pub fn redemption_request(e: &Env, request_id: u32) -> RedemptionRequest {
