@@ -836,7 +836,7 @@ fn test_operator_cannot_distribute_zero_yield() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (vault_id, token_id, _zkme_id, admin) = make_vault(&env);
+    let (vault_id, _token_id, _zkme_id, admin) = make_vault(&env);
     activate(&env, &vault_id, &admin);
 
     let vault = SingleRWAVaultClient::new(&env, &vault_id);
@@ -1119,5 +1119,4 @@ fn test_partial_early_redemption_then_full_redemption_at_maturity() {
         total_received >= deposit_amount,
         "total received must be at least the deposited principal"
     );
->>>>>>> origin/main
 }
